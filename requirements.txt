@@ -1,0 +1,3 @@
+numpy>=1.24.0
+python-zerotier>=0.1.0  # simulated
+qiskit>=1.0.0  # optional quantum backend
