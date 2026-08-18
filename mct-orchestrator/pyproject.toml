@@ -1,0 +1,17 @@
+[project]
+name = "mct-1700021-orchestrator"
+version = "0.1.0"
+description = "Fail-closed MCP orchestrator for validated automaton commands"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=1.0.0",
+  "requests>=2.32.0",
+  "jsonschema>=4.23.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
