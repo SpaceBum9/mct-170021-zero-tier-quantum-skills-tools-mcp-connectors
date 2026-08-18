@@ -1,18 +1,57 @@
 # MCT-1700021 System Orchestrator
 
-A small, fail-closed Python MCP server that validates automaton commands, dispatches them to a configured HTTPS mesh-controller API, and resolves deterministic SHB routes between connector and automaton capabilities.
+A fail-closed Python MCP server for validated automaton dispatch, deterministic SHB routing, and a hotspot-to-backoffice trust boundary.
+
+## Architecture
+
+```text
+Hotspot / Mobile WAN
+        |
+        v
+Authenticated tunnel
+        |
+        v
+Hotspot Gateway
+- client identity
+- tunnel state
+- session validity
+- permission allowlist
+        |
+        v
+SHB Router
+- capability/operation allowlist
+- health + stability gates
+- deterministic target selection
+        |
+        +--> SHB Backoffice
+        |     - read
+        |     - write
+        |     - sync
+        |     - admin
+        |
+        +--> MCP connectors
+        |
+        +--> Mesh controller
+              - initialize
+              - sync
+              - execute
+              - halt
+```
+
+The hotspot itself is treated only as transport. A request does not receive a backoffice route unless the tunnel is authenticated, the session is valid, and the client has the exact `backoffice:<operation>` permission.
 
 ## Security properties
 
-- Rejects malformed JSON and commands outside a strict Draft-07 JSON Schema.
-- Rejects unknown fields and unknown actions.
-- Requires `MESH_AUTH_TOKEN`; there is no production placeholder fallback.
-- Requires an HTTPS controller URL.
-- Restricts identifiers before they are interpolated into the request path.
-- Uses bounded HTTP timeouts.
-- Does not claim ZeroTier, PQC, Cloudflare, or other transport properties it has not verified.
-- Treats transport failure, timeout, remote rejection, and missing routes as failure rather than success.
-- SHB routing is allowlist-based and filters by health, minimum stability, capability, and permitted operation.
+- Strict Draft-07 validation for automaton commands.
+- Unknown fields and unsupported operations fail closed.
+- `MESH_AUTH_TOKEN` is required for external automaton dispatch.
+- Mesh controller URL must use HTTPS.
+- Bounded HTTP timeouts and explicit transport-failure handling.
+- SHB routing filters by health, stability, capability, and allowed operation.
+- Backoffice permissions are split into `read`, `write`, `sync`, and `admin`.
+- Gateway authorization and routing do not execute a backoffice operation; they return an authorized route only.
+- Audit events are generated for accepted and rejected backoffice authorization decisions.
+- No unverified ZeroTier, PQC, Cloudflare, or other security property is claimed.
 
 ## Install
 
@@ -31,7 +70,7 @@ export MESH_AUTH_TOKEN='replace-with-real-secret'
 export MESH_REQUEST_TIMEOUT='10'
 ```
 
-Do not commit the real token.
+Do not commit real tokens.
 
 ## Run
 
@@ -39,13 +78,11 @@ Do not commit the real token.
 python server.py
 ```
 
-`FastMCP.run()` uses the SDK's default transport. For ChatGPT deployment, expose the MCP server through an HTTPS-reachable endpoint using a transport/configuration supported by the current MCP SDK and follow the current ChatGPT MCP connection instructions.
+## MCP tools
 
-## SHB router
+### `route_shb_request`
 
-`route_shb_request` resolves a safe route but does not execute the operation. Selection is deterministic: highest priority, then highest stability, then lexicographically smallest route ID.
-
-Example:
+Read-only route resolution. Selection is deterministic: highest priority, then highest stability, then lexicographically smallest route ID.
 
 ```json
 {
@@ -55,14 +92,27 @@ Example:
 }
 ```
 
-Default routes currently include:
+### `authorize_hotspot_backoffice`
 
-- `mesh-controller-primary` for automaton operations: `initialize`, `sync`, `execute`, `halt`
-- `connector-readonly` for connector operations: `search`, `fetch`, `status`
+Validates the trust boundary and returns an authorized SHB backoffice route without performing the external action.
 
-If no healthy route satisfies the requested capability, operation, and stability threshold, routing fails closed with `no_safe_route`.
+```json
+{
+  "client_id": "hotspot-client-01",
+  "tunnel_authenticated": true,
+  "session_valid": true,
+  "permissions": ["backoffice:read"],
+  "backoffice": {
+    "operation": "read",
+    "resource": "jobs",
+    "payload": {}
+  }
+}
+```
 
-## Command shape
+### `dispatch_automaton_command`
+
+Mutating external dispatch to the configured mesh controller.
 
 ```json
 {
@@ -75,27 +125,11 @@ If no healthy route satisfies the requested capability, operation, and stability
 }
 ```
 
-Allowed actions: `initialize`, `sync`, `execute`, `halt`.
+## Default SHB routes
 
-The mesh controller is expected to accept:
-
-```text
-POST /api/v1/nodes/{target_node}/automata/{automaton_id}/commands
-Authorization: Bearer ...
-Content-Type: application/json
-```
-
-with the JSON body:
-
-```json
-{
-  "action": "sync",
-  "parameters": {
-    "target_node": "node-01",
-    "stability_threshold": 0.9
-  }
-}
-```
+- `mesh-controller-primary`: `initialize`, `sync`, `execute`, `halt`
+- `backoffice-primary`: `read`, `write`, `sync`, `admin`
+- `connector-readonly`: `search`, `fetch`, `status`
 
 ## Test
 
@@ -105,4 +139,4 @@ pytest -q
 
 ## Production hardening still recommended
 
-Before controlling real equipment or infrastructure, add controller-side authorization per automaton/action, replay or idempotency keys, immutable audit logging, rate limiting, certificate validation/pinning as appropriate, health data sourced from authenticated controller state, and a separate approval boundary for high-impact actions such as `halt` or `execute`.
+Before real infrastructure use, source tunnel/session assertions from a trusted identity provider or VPN controller rather than caller-supplied booleans. Add controller-side authorization, replay/idempotency protection, durable or immutable audit storage, rate limiting, authenticated health telemetry, certificate validation/pinning where appropriate, and an independent approval boundary for high-impact `admin`, `execute`, and `halt` operations.
