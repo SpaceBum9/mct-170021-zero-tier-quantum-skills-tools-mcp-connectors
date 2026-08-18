@@ -10,6 +10,8 @@ import requests
 from jsonschema import Draft7Validator
 from mcp.server.fastmcp import FastMCP
 
+from shb_router import DEFAULT_ROUTER, SHBRouteError
+
 
 orchestrator_mcp = FastMCP("MCT-1700021-System-Orchestrator")
 
@@ -167,6 +169,52 @@ def _dispatch(command: dict[str, Any]) -> str:
         target_node=target_node,
         http_status=response.status_code,
         dispatch_result=remote_result,
+    )
+
+
+@orchestrator_mcp.tool()
+def route_shb_request(request_payload_json: str) -> str:
+    """Use this when a connector or automaton request needs a deterministic SHB route.
+
+    This tool only resolves a route. It does not execute the selected operation.
+    """
+    try:
+        request = json.loads(request_payload_json)
+    except json.JSONDecodeError as exc:
+        return _result(status="rejected", error="invalid_json", detail=str(exc))
+
+    if not isinstance(request, dict):
+        return _result(status="rejected", error="invalid_route_request")
+
+    allowed = {"capability", "operation", "min_stability"}
+    if set(request) - allowed:
+        return _result(status="rejected", error="unknown_route_fields")
+
+    capability = request.get("capability")
+    operation = request.get("operation")
+    min_stability = request.get("min_stability", 0.0)
+
+    if not isinstance(capability, str) or not isinstance(operation, str):
+        return _result(status="rejected", error="invalid_route_request")
+    if isinstance(min_stability, bool) or not isinstance(min_stability, (int, float)):
+        return _result(status="rejected", error="invalid_route_request")
+
+    try:
+        route = DEFAULT_ROUTER.resolve(
+            capability=capability,
+            operation=operation,
+            min_stability=float(min_stability),
+        )
+    except SHBRouteError as exc:
+        return _result(status="rejected", error="no_safe_route", detail=str(exc))
+
+    return _result(
+        status="routed",
+        route_id=route.route_id,
+        target=route.target,
+        capability=capability,
+        operation=operation,
+        stability=route.stability,
     )
 
 
