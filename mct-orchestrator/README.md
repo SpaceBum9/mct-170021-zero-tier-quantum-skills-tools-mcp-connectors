@@ -1,6 +1,6 @@
 # MCT-1700021 System Orchestrator
 
-A small, fail-closed Python MCP server that validates an automaton command and dispatches it to a configured HTTPS mesh-controller API.
+A small, fail-closed Python MCP server that validates automaton commands, dispatches them to a configured HTTPS mesh-controller API, and resolves deterministic SHB routes between connector and automaton capabilities.
 
 ## Security properties
 
@@ -11,7 +11,8 @@ A small, fail-closed Python MCP server that validates an automaton command and d
 - Restricts identifiers before they are interpolated into the request path.
 - Uses bounded HTTP timeouts.
 - Does not claim ZeroTier, PQC, Cloudflare, or other transport properties it has not verified.
-- Treats transport failure, timeout, and remote rejection as failure rather than success.
+- Treats transport failure, timeout, remote rejection, and missing routes as failure rather than success.
+- SHB routing is allowlist-based and filters by health, minimum stability, capability, and permitted operation.
 
 ## Install
 
@@ -39,6 +40,27 @@ python server.py
 ```
 
 `FastMCP.run()` uses the SDK's default transport. For ChatGPT deployment, expose the MCP server through an HTTPS-reachable endpoint using a transport/configuration supported by the current MCP SDK and follow the current ChatGPT MCP connection instructions.
+
+## SHB router
+
+`route_shb_request` resolves a safe route but does not execute the operation. Selection is deterministic: highest priority, then highest stability, then lexicographically smallest route ID.
+
+Example:
+
+```json
+{
+  "capability": "connector",
+  "operation": "fetch",
+  "min_stability": 0.9
+}
+```
+
+Default routes currently include:
+
+- `mesh-controller-primary` for automaton operations: `initialize`, `sync`, `execute`, `halt`
+- `connector-readonly` for connector operations: `search`, `fetch`, `status`
+
+If no healthy route satisfies the requested capability, operation, and stability threshold, routing fails closed with `no_safe_route`.
 
 ## Command shape
 
@@ -83,4 +105,4 @@ pytest -q
 
 ## Production hardening still recommended
 
-Before controlling real equipment or infrastructure, add controller-side authorization per automaton/action, replay or idempotency keys, immutable audit logging, rate limiting, certificate validation/pinning as appropriate, and a separate approval boundary for high-impact actions such as `halt` or `execute`.
+Before controlling real equipment or infrastructure, add controller-side authorization per automaton/action, replay or idempotency keys, immutable audit logging, rate limiting, certificate validation/pinning as appropriate, health data sourced from authenticated controller state, and a separate approval boundary for high-impact actions such as `halt` or `execute`.
