@@ -51,9 +51,7 @@ def test_dispatches_to_expected_endpoint(monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(requests, "post", fake_post)
-
     result = json.loads(server.dispatch_automaton_command(json.dumps(VALID)))
-
     assert result["status"] == "orchestrated"
     assert called["url"] == "https://mesh.test/api/v1/nodes/node-01/automata/automaton-01/commands"
     assert called["headers"]["Authorization"] == "Bearer secret"
