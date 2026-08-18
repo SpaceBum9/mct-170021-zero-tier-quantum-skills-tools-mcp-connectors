@@ -10,9 +10,10 @@ import requests
 from jsonschema import Draft7Validator
 from mcp.server.fastmcp import FastMCP
 
+from attestation import AttestationError, verify_attestation
 from audit import make_event
 from backoffice_client import BackofficePolicyError, parse_backoffice_request
-from hotspot_gateway import GatewayAccessError, build_session
+from hotspot_gateway import GatewayAccessError, GatewaySession
 from shb_router import DEFAULT_ROUTER, SHBRouteError
 
 
@@ -62,6 +63,17 @@ def _runtime_config() -> tuple[str, str, float]:
     if timeout <= 0 or timeout > 120:
         raise RuntimeError("MESH_REQUEST_TIMEOUT muss zwischen 0 und 120 Sekunden liegen.")
     return mesh_api_url, security_token, timeout
+
+
+def _attestation_config() -> tuple[str, str, str]:
+    secret = os.environ.get("SHB_ATTESTATION_SECRET", "")
+    audience = os.environ.get("SHB_ATTESTATION_AUDIENCE", "mct-backoffice")
+    issuer = os.environ.get("SHB_ATTESTATION_ISSUER", "shb-hotspot-gateway")
+    if len(secret) < 32:
+        raise RuntimeError("SHB_ATTESTATION_SECRET muss mindestens 32 Zeichen lang sein.")
+    if not audience or not issuer:
+        raise RuntimeError("Attestation audience/issuer dürfen nicht leer sein.")
+    return secret, audience, issuer
 
 
 def _validate_identifier(value: str, field: str) -> None:
@@ -135,37 +147,42 @@ def route_shb_request(request_payload_json: str) -> str:
 
 @orchestrator_mcp.tool()
 def authorize_hotspot_backoffice(request_payload_json: str) -> str:
-    """Validate a hotspot/tunnel session and authorize a backoffice route. No external action is executed."""
+    """Verify a signed gateway attestation and authorize a backoffice route. No external action is executed."""
     try:
         request = json.loads(request_payload_json)
     except json.JSONDecodeError as exc:
         return _result(status="rejected", error="invalid_json", detail=str(exc))
     if not isinstance(request, dict):
         return _result(status="rejected", error="invalid_gateway_request")
-    allowed = {"client_id", "tunnel_authenticated", "session_valid", "permissions", "backoffice"}
-    if set(request) - allowed:
+    if set(request) != {"attestation", "backoffice"}:
         return _result(status="rejected", error="unknown_gateway_fields")
 
-    client_id = request.get("client_id")
-    tunnel_authenticated = request.get("tunnel_authenticated")
-    session_valid = request.get("session_valid")
-    permissions = request.get("permissions")
+    token = request.get("attestation")
     backoffice = request.get("backoffice")
-    if not isinstance(client_id, str) or not isinstance(tunnel_authenticated, bool) or not isinstance(session_valid, bool) or not isinstance(permissions, list) or not isinstance(backoffice, dict):
+    if not isinstance(token, str) or not isinstance(backoffice, dict):
         return _result(status="rejected", error="invalid_gateway_request")
 
+    client_id = "unverified"
     try:
-        session = build_session(client_id=client_id, tunnel_authenticated=tunnel_authenticated, session_valid=session_valid, permissions=permissions)
+        secret, audience, issuer = _attestation_config()
+        attestation = verify_attestation(token, secret=secret, expected_audience=audience, expected_issuer=issuer)
+        client_id = attestation.client_id
+        session = GatewaySession(
+            client_id=attestation.client_id,
+            tunnel_authenticated=True,
+            session_valid=True,
+            permissions=attestation.permissions,
+        )
         bo_request = parse_backoffice_request(backoffice)
         permission = bo_request.required_permission()
         session.authorize(permission)
         route = DEFAULT_ROUTER.resolve(capability="backoffice", operation=bo_request.operation, min_stability=0.0)
-    except (GatewayAccessError, BackofficePolicyError, SHBRouteError) as exc:
+    except (RuntimeError, AttestationError, GatewayAccessError, BackofficePolicyError, SHBRouteError) as exc:
         event = make_event(client_id=client_id, action="backoffice_authorize", resource=str(backoffice.get("resource", "unknown")), outcome="rejected", metadata={"reason": str(exc)})
         return _result(status="rejected", error="backoffice_access_denied", detail=str(exc), audit=event.as_dict())
 
-    event = make_event(client_id=client_id, action=bo_request.operation, resource=bo_request.resource, outcome="authorized", metadata={"route_id": route.route_id, "target": route.target})
-    return _result(status="authorized", route_id=route.route_id, target=route.target, operation=bo_request.operation, resource=bo_request.resource, audit=event.as_dict())
+    event = make_event(client_id=client_id, action=bo_request.operation, resource=bo_request.resource, outcome="authorized", metadata={"route_id": route.route_id, "target": route.target, "attestation_nonce": attestation.nonce})
+    return _result(status="authorized", route_id=route.route_id, target=route.target, operation=bo_request.operation, resource=bo_request.resource, client_id=client_id, audit=event.as_dict())
 
 
 @orchestrator_mcp.tool()
