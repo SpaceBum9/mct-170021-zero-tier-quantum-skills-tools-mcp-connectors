@@ -38,30 +38,20 @@ class SHBRouter:
             raise ValueError(f"duplicate route_id: {route.route_id}")
         self._routes[route.route_id] = route
 
-    def resolve(
-        self,
-        *,
-        capability: str,
-        operation: str,
-        min_stability: float = 0.0,
-    ) -> SHBRoute:
+    def resolve(self, *, capability: str, operation: str, min_stability: float = 0.0) -> SHBRoute:
         if not capability or not operation:
             raise SHBRouteError("capability and operation are required")
         if not 0.0 <= min_stability <= 1.0:
             raise SHBRouteError("min_stability must be between 0 and 1")
-
         candidates = [
-            route
-            for route in self._routes.values()
+            route for route in self._routes.values()
             if route.healthy
             and route.stability >= min_stability
             and capability in route.capabilities
             and operation in route.allowed_operations
         ]
-
         if not candidates:
             raise SHBRouteError("no eligible SHB route")
-
         candidates.sort(key=lambda route: (-route.priority, -route.stability, route.route_id))
         return candidates[0]
 
@@ -88,6 +78,14 @@ DEFAULT_ROUTER = SHBRouter(
             capabilities=frozenset({"automaton"}),
             allowed_operations=frozenset({"initialize", "sync", "execute", "halt"}),
             priority=100,
+            stability=1.0,
+        ),
+        SHBRoute(
+            route_id="backoffice-primary",
+            target="shb-backoffice",
+            capabilities=frozenset({"backoffice"}),
+            allowed_operations=frozenset({"read", "write", "sync", "admin"}),
+            priority=80,
             stability=1.0,
         ),
         SHBRoute(
