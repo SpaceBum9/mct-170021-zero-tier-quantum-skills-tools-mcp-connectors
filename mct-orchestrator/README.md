@@ -11,11 +11,18 @@ Hotspot / Mobile WAN
 Authenticated tunnel
         |
         v
-Hotspot Gateway
+Trusted Hotspot Gateway
 - client identity
-- tunnel state
-- session validity
+- tunnel/session state
 - permission allowlist
+- short-lived signed attestation
+        |
+        v
+MCP Attestation Verifier
+- HMAC-SHA256 signature
+- issuer + audience checks
+- expiry/lifetime checks
+- nonce replay protection
         |
         v
 SHB Router
@@ -38,7 +45,7 @@ SHB Router
               - halt
 ```
 
-The hotspot itself is treated only as transport. A request does not receive a backoffice route unless the tunnel is authenticated, the session is valid, and the client has the exact `backoffice:<operation>` permission.
+The hotspot itself is transport only. Backoffice access is based on a signed gateway attestation, not caller-controlled `tunnel_authenticated`, `session_valid`, or permission fields.
 
 ## Security properties
 
@@ -49,6 +56,7 @@ The hotspot itself is treated only as transport. A request does not receive a ba
 - Bounded HTTP timeouts and explicit transport-failure handling.
 - SHB routing filters by health, stability, capability, and allowed operation.
 - Backoffice permissions are split into `read`, `write`, `sync`, and `admin`.
+- Hotspot gateway attestations use HMAC-SHA256 and are checked for issuer, audience, expiry, maximum lifetime, authenticated tunnel/session claims, and nonce replay.
 - Gateway authorization and routing do not execute a backoffice operation; they return an authorized route only.
 - Audit events are generated for accepted and rejected backoffice authorization decisions.
 - No unverified ZeroTier, PQC, Cloudflare, or other security property is claimed.
@@ -68,9 +76,13 @@ pip install -e '.[dev]'
 export MESH_CONTROLLER_URL='https://mesh.example.internal/api/v1'
 export MESH_AUTH_TOKEN='replace-with-real-secret'
 export MESH_REQUEST_TIMEOUT='10'
+
+export SHB_ATTESTATION_SECRET='replace-with-a-random-secret-at-least-32-chars'
+export SHB_ATTESTATION_AUDIENCE='mct-backoffice'
+export SHB_ATTESTATION_ISSUER='shb-hotspot-gateway'
 ```
 
-Do not commit real tokens.
+Do not commit real tokens or attestation secrets.
 
 ## Run
 
@@ -94,14 +106,11 @@ Read-only route resolution. Selection is deterministic: highest priority, then h
 
 ### `authorize_hotspot_backoffice`
 
-Validates the trust boundary and returns an authorized SHB backoffice route without performing the external action.
+Verifies a signed gateway attestation and returns an authorized SHB backoffice route without performing the external action.
 
 ```json
 {
-  "client_id": "hotspot-client-01",
-  "tunnel_authenticated": true,
-  "session_valid": true,
-  "permissions": ["backoffice:read"],
+  "attestation": "<signed-gateway-attestation>",
   "backoffice": {
     "operation": "read",
     "resource": "jobs",
@@ -109,6 +118,24 @@ Validates the trust boundary and returns an authorized SHB backoffice route with
   }
 }
 ```
+
+The trusted gateway signs claims with this exact shape:
+
+```json
+{
+  "iss": "shb-hotspot-gateway",
+  "aud": "mct-backoffice",
+  "sub": "hotspot-client-01",
+  "exp": 1787082000,
+  "iat": 1787081880,
+  "jti": "unique-request-nonce",
+  "permissions": ["backoffice:read"],
+  "tunnel_authenticated": true,
+  "session_valid": true
+}
+```
+
+Attestations are intentionally short-lived. The verifier defaults to a maximum lifetime of 300 seconds.
 
 ### `dispatch_automaton_command`
 
@@ -137,6 +164,8 @@ Mutating external dispatch to the configured mesh controller.
 pytest -q
 ```
 
+Tests cover signed authorization, tampered tokens, tunnel claim denial, missing permission, admin denial, wrong audience, and replay rejection.
+
 ## Production hardening still recommended
 
-Before real infrastructure use, source tunnel/session assertions from a trusted identity provider or VPN controller rather than caller-supplied booleans. Add controller-side authorization, replay/idempotency protection, durable or immutable audit storage, rate limiting, authenticated health telemetry, certificate validation/pinning where appropriate, and an independent approval boundary for high-impact `admin`, `execute`, and `halt` operations.
+The process-local replay cache is sufficient only for a single-process prototype. Production should use a shared durable replay store (for example Redis with TTL or an equivalent transactional store), durable/immutable audit storage, key rotation with key IDs, rate limiting, authenticated health telemetry, controller-side authorization, certificate pinning where appropriate, and an independent approval boundary for high-impact `admin`, `execute`, and `halt` operations.
