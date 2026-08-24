@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **Consolidated on 2026-08-24.** The canonical location is [SpaceBum9/MCT-2600027 · packages/zero-tier-connectors](https://github.com/SpaceBum9/MCT-2600027/tree/main/packages/zero-tier-connectors). This repository is retained only for history and open-work provenance. Do not start new work here.
+
 # MCT-170021 Zero-Tier Quantum Skills Tools and MCP Connectors
 
 ## System Identity
